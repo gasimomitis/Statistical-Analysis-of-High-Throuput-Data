@@ -1,0 +1,186 @@
+---
+title: 'Classification'
+output: pdf_document
+---
+## Author: Georgios Asimomitis
+
+## Introduction
+
+The purpose of this exercise is to give a deeper insight on classifying samples using svm and knn. Initially, we load the data, we prefilter the genes reducing their dimensionality and then we apply svm and knn as well as compute their accuracy of prediction. Then we examine classification through top scoring pairs and in the last part of the exercise we tune the classification parameters to optimize classification.
+
+## 1 Loading an example data set
+
+In Bioconductor there is an example data set from the publication:
+
+Sabina Chiaretti, Xiaochun Li, Robert Gentleman, Antonella Vitale, Marco Vignetti, Franco Mandelli, Jerome Ritz, and Robin Foa, 'Gene expression profile of adult T-cell acute lymphocytic leukemia identifies distinct subsets of patients with different response to therapy and survival', Blood, 1 April 2004, Vol. 103, No. 7.
+
+The data set contains 128 samples that were used to characterize subtypes of acute lymphoblastic leukemia and the number of features is 12625.
+
+
+```{r warning = FALSE, message=FALSE}
+library(ALL)
+data(ALL)
+show(ALL)
+```
+
+In this exercise we will only use samples from B-cells and the molecular biological characterizations "BCR/ABL" and "NEG". The matrix 'dataMatrix contains the expression data of 12625 genes (features) over 79 samples. Each of the samples belongs either to the class "BCR/ABL" or "NEG". The factor 'classLabels' presents the class in which each individual sample belongs.  The genes of 'dataMatrix' will be used as features (variables) to classify the samples.    
+
+```{r}
+bCellSamples = grep("^B", ALL$BT)
+BcrAndNegSamples = which(ALL$mol.biol %in% c("BCR/ABL", "NEG"))
+samplesToUse = intersect(bCellSamples, BcrAndNegSamples)
+dataMatrix = exprs(ALL[ ,samplesToUse])
+
+head(dataMatrix)
+dim(dataMatrix)
+
+classLabels = factor(ALL$mol.biol[samplesToUse])
+classLabels
+```
+
+## 2 Prefiltering of Genes
+
+In order to reduce the dimensionality, we select only the 1000 genes with the highest variance in our data set. Therefore, we remove the low variance genes from the data set. In the first place, we compute the variance for each gene across all samples and then we sort the genes in decreasing order of variance. Then we select the first 1000 genes and reform our dataMatrix so as to contain only these 1000 high variance genes. 
+
+```{r}
+Var = apply(dataMatrix,1,var)
+names(Var) = rownames(dataMatrix)
+sortedVar = sort(Var,decreasing = TRUE);
+highVarGenes = names(sortedVar[1:1000])  
+dataMatrix = dataMatrix[highVarGenes,]
+dim(dataMatrix)
+```
+
+## 3 Support Vector Machine Classification
+
+By using the dataMatrix, classLabels and a linear kernel we form our svm model by using the built in R function svm of the e1071 library. After having formed and trained the svm model we use the function predict from the same package in order  to predict the class of each sample based on the model trained by svm. As expected, the error is zero, as training and prediction were performed in the same dataset.
+
+Then, by adding the term 'cross = length(classLabels)' in the svm function, we run a cross validation to estimate the error when classifying unknown samples. Out of the summary of the output we observe that 51 support vectors were used and that the total Accuracy of classification is 81.01266 %. 
+
+```{r warning = FALSE}
+library(e1071)
+model = svm(t(dataMatrix), classLabels, kernel = "linear")
+
+predicted = predict(model, t(dataMatrix))
+table(true = classLabels, pred = predicted)
+
+model.cv = svm(t(dataMatrix), classLabels, kernel = "linear", cross = length(classLabels))
+summary(model.cv)
+
+model.cv$tot.accuracy
+```
+
+After having used svm, we now perform the classification of our samples using the knn classifier. For that purpose, we make use of the function 'knn.cv', of the package 'class', which executes k-nearest neighbour cross-validatory classification using the method leave-one-out. As earlier, we transpose our dataMatrix so as the samples to be in the rows and the features (genes) in the columns.
+
+After the classification we examine the Accuracy of the knn model by observing the correct classified samples. The Accuracy is 75.94937 %.
+
+Additionally, we make use of the library 'gmodels' in order to observe analytically how the classLabels relate to the output of the model. We see that 32 out of the 37 'BCR/ABL' were correctly classified as 'BCR/ABL', whereas only 28 out of 48 NEG samples were correctly classified as 'NEG'. Thus the Accuracy equals  100*(28+32) / 79 which results in the same percentage that was computed before, as expected. 
+
+```{r warning = FALSE}
+library(class)
+model.knn = knn.cv(t(dataMatrix), classLabels, k = 5)
+Accuracy = 100 * sum(classLabels == model.knn)/length(classLabels) 
+Accuracy
+
+library(gmodels)
+CrossTable(x = classLabels, y = model.knn, prop.chisq=FALSE)
+```
+
+## 4 Top Scoring Pairs Classification
+
+Here we use the function tspcalc of the library 'tspair' in order to calculate the pair of genes that show the maximum difference in ranking between the two groups. Given as input the dataMatrix and the classLabels we compute tspResult and find which two genes form the pair returned by tspcalc. Then, according to tspResult, we predict the  class of each of the samples and then by using 'CrossTable', of the library gmodels, we observe the relation between the number of TP, FP, TN, FN. 
+'
+```{r warning = FALSE}
+library(tspair)
+
+tspResult = tspcalc(dataMatrix,classLabels)
+rownames(dataMatrix)[tspResult$index[1]]
+rownames(dataMatrix)[tspResult$index[2]]
+
+predictedLabels = predict(tspResult, dataMatrix)
+table(predictedLabels, classLabels)
+CrossTable(x = classLabels, y = predictedLabels, prop.chisq=FALSE)
+```
+
+Within this frame of reference, we implement manually a leave-one-out cross validation. In particular, in each iteration we compute the tspResult of the tspcalc function for all samples except of one and then we evaluate the prediction by comparing the predicted class of the one sample left out with its corresponding true classLabel. We store each individual result in the vector 'correct.prediction' and then we compute the Accuracy.   
+
+```{r}
+correct.prediction <- rep(TRUE,ncol(dataMatrix))
+for( i in 1:ncol(dataMatrix)){
+ 
+ testdat <- dataMatrix[ , -i]
+ testgrp <- classLabels[-i]
+ tspResult <- tspcalc(testdat,testgrp)
+
+ prediction <- predict(tspResult,dataMatrix)[i]
+ correct.prediction[i] <- prediction == classLabels[i]
+
+  }
+
+Accuracy = 100*sum(correct.prediction[TRUE])/(length(correct.prediction))
+Accuracy
+```
+
+## 5 Parameter Optimization
+
+In this last part of the exercise, we examine the value of k for which the knn classifier works best. For that purpose we make use of the function tune.knn. As shown in the code as well, we can compute the k with the least error by using three different methods of sampling; 10-fold cross validation, bootstraping, fixed training/validation set. Cross validation and bootstraping create both 10 different sets for training with length 71 whereas the fixed set method uses a single fixed training set of 52 samples. Out of the plots below we can observe the relationship between the k value and the error per method and derive the optimal k value. These are shown below.
+
+For each of the three cases we use the optimal value for k to classify the unknown samples with the method knn. In order to do that we split randomly our samples into the ones that will be used for training and the ones that will be used for testing. Using the sample function, we select 80% of our samples to be the training set and the rest 20% to be used for testing. After having separated the classLabels according to the split of the samples in the two sets, we use the knn function to perform the prediction. We also compare the prediction accuracy of the 3 sampling methods for the optimal k they tuned.  
+
+```{r}
+knn.cross <- tune.knn(x = t(dataMatrix), y = classLabels, 
+            k = 1:20,tunecontrol=tune.control(sampling = "cross"))
+summary(knn.cross)
+plot(knn.cross)
+knn.cross$best.parameters[1,1]
+length(knn.cross$train.ind)
+
+knn.boot <- tune.knn(x = t(dataMatrix), y = classLabels, 
+            k = 1:20,tunecontrol = tune.control(sampling = "boot"))
+summary(knn.boot)
+plot(knn.boot)
+knn.boot$best.parameters[1,1]
+length(knn.boot$train.ind)
+
+knn.fix <- tune.knn(x = t(dataMatrix), y = classLabels,
+          k = 1:20,tunecontrol=tune.control(sampling = "fix") , fix=10)
+summary(knn.fix)
+plot(knn.fix)
+knn.fix$best.parameters[1,1]
+length(knn.fix$train.ind[[1]])
+
+set.seed(1234)
+ind <- sample(2, ncol(dataMatrix), replace=TRUE, prob=c(0.8, 0.2))
+training <- dataMatrix[,ind==1]
+testing <- dataMatrix[,ind==2]
+trainLabels <- classLabels[ind==1]
+testLabels <- classLabels[ind==2]
+
+pred_cross <- knn(train = t(training), test = t(testing), 
+              cl = trainLabels, k=knn.cross$best.parameters[1,1])
+table(pred_cross, testLabels)
+Accuracy_cross = 100 * sum(testLabels == pred_cross)/length(testLabels)
+Accuracy_cross
+
+pred_boot <- knn(train = t(training), test = t(testing), 
+            cl = trainLabels, k=knn.boot$best.parameters[1,1])
+table(pred_boot, testLabels)
+Accuracy_boot = 100 * sum(testLabels == pred_boot)/length(testLabels)
+Accuracy_boot
+
+pred_fix <- knn(train = t(training), test = t(testing), 
+            cl = trainLabels, k=knn.fix$best.parameters[1,1])
+table(pred_fix, testLabels)
+Accuracy_fix = 100 * sum(testLabels == pred_fix)/length(testLabels)
+Accuracy_fix
+
+barplot(c(Accuracy_cross,Accuracy_boot,Accuracy_fix),main="Accuracy",
+   ylab="Percentage",ylim=c(0,80),col=c("darkblue", "black","red"))
+
+
+legend("bottomright", legend = 
+         c("cross validation", "bootstraping","fixed set"),
+         fill = c("darkblue", "black","red"))
+
+```
+
