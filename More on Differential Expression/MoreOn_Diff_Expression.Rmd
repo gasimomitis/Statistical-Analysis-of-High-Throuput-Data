@@ -1,0 +1,268 @@
+---
+title: "More on differential expression with the limma package"
+output: pdf_document
+---
+## Author: Georgios Asimomitis
+
+# Introduction
+
+The purpose of this exercise is to understand a few more details of a standard 'limma' differential expression (DE) analysis.  In particular, we explore: 
+  1. the combination of design matrices and contrast matrices to answer DE questions-of-interest
+  2. some of the preprocessing steps (and the concepts leading to them) for Affymetrix microarray data.
+
+Initially we load the necessary libraries and unzip the file "affy_estrogen.zip"
+```{r warning=FALSE, message=FALSE}
+library("limma")
+library("affy")
+library("preprocessCore")
+unzip("affy_estrogen.zip")
+ddir <- "affy_estrogen"
+dir(ddir)
+```
+
+The details of the experiment are stored in the machine-readable table called ``targets.txt''. This is our metadata. In the first place we read in the "targets.txt" which contains 8 data files that include the gene differential expression according to time and the presence of estrogen. Then we read in the Affymetrix data and process it with the method RMA (robust multichip analysis) which converts the AffyBatch "abatch" into the ExpressionSet "eset". This expressionSet includes the information for 12625 genes which are expressed over the 8 samples: low10-1.cel, low10-2.cel, high10-1.cel,  high10-2.cel, low48-1.cel,  low48-2.cel,  high48-1.cel, high48-2.cel. "High" and "low" denote the presence or absence of estrogen correspondingly and "10", "48" display the time in hours. Each value of the expressionSet presents the level of gene expression of each gene in the corresponding sample. Our target is to find how many and which genes are differentially expressed in accordance to the different conditions that the samples represent.    
+
+```{r warning=FALSE, message=FALSE}
+# preprocess affymetrix data
+targets <- readTargets("targets.txt", path=ddir)
+targets
+
+abatch <- ReadAffy(filenames=targets$filename,
+                   celfile.path=ddir)
+eset <- rma(abatch)  # bg correct, normalize, summarize
+```
+
+
+In order to have an overall look of our large dataset, we use the multidimensional scaling (MDS) plot to visualize the relations between our samples.  In this case, distances on the plot approximate the typical log2 fold changes.
+
+```{r}
+plotMDS( exprs(eset) )  # MDS plot
+```
+
+# Design Matrix
+
+An essential step in order to run the standard limma pipeline for differential expression is the construction of the design matrix, which in combination with the optional contrast matrix, models our experiment.  
+
+The following design matrix has 4 columns and 8 rows. Each row corresponds to each sample and each of the columns corresponds to one of the 4 different conditions in which we test gene expression; the first column "absent10" specifies the samples (1,2) in which time equals to 10 hours and estrogen was almost absent, the second column "absent48" specifies the samples (5,6) in which time equals to 48 hours and estrogen was absent as well, the third column "present10" specifies the samples (3,4) in which time equals to 10 hours and estrogen was present and the fourth column "present48" specifies the samples (7,8) in which time equals to 48 hours and estrogen was present as well. The value of 1 in the design matrix represents the sample participation in the corresponding column. 
+
+The form of the design matrix is in accordance with the parameters that need to be estimated. In our model we define the parameter vector b=transpose([b1 b2 b3 b4]), where b1 denotes the condition  "absent10", b2 denotes the condition "absent48", b3 denotes the condition "present10" and b4 denotes the condition  "present48".
+
+In the code below, the metadata is encoded into a factor variable that is used for creating the design matrix.
+
+```{r}
+# do the limma modeling
+f <- paste(targets$estrogen,targets$time.h,sep="")
+f <- factor(f)
+
+# create design matrix
+design <- model.matrix(~0+f)
+colnames(design) <- levels(f)
+design
+```
+
+We can now fit the linear model using LmFit which takes as input the expression set and the design matrix.
+
+```{r}
+fit <- lmFit(eset, design)
+```
+
+# Contrast Matrix
+
+In order to draw conclusions about the differential expression across the different experimental condtions we need to interpret and process the parameters of our design matrix in a useful way. Therefore, we define a contrast matrix, which defines  the specific comparisons in which we are interested by forming the substractions between the appropriate parameters.  In particular, we define 3 contrast variables: E10 which represents the difference between present10 and absent10, E48 which represents the difference between present48 and absent48 and Time which represents the difference between absent48 and absent10. E10 contrast variable refers to the case in which genes are differentially expressed in the presence of estrogen in the time scale of 10 hours and are not differentially expressed in the absent10 condition. Similarly, E10 contrast variable describes the case in which genes are differentially expressed in present48 and not in absent48 and Time refers to the ones that in the absense of estrogen are differentially expressed in the scale of 48 hours and not in 10h.
+
+Since the contrast matrix constructs 3 contrast variables out of 4 parameters, it has 3 columns and 4 rows. The Value of -1 denotes a parameter that is subtracted in the corresponding contrast variable, a value of 1 shows a parameter out of which a value is subtracted and zero denotes that a parameter does not participate in the formation of the contrast variable.  
+
+The contrast matrix is constructed by using the makeContrasts() accessory function.
+
+```{r}
+cont.matrix <- makeContrasts(E10="present10-absent10",
+                             E48="present48-absent48",
+                             Time="absent48-absent10",levels=design)
+cont.matrix
+```
+
+# Model, Coefficients, Top Genes
+
+Now, the contrasts can be fit and the moderation of the variance parameters can be performed. Given the linear model fit, contrasts.fit function computes the estimated coefficients and standard errors for the given set of contrasts. The output is an object of the same class as fit, (MArrayLM) that includes a numeric matrix containing the estimated coefficients for each contrast.
+
+Then we use eBayes built in R function which takes as input the linear model and computes moderated t-statistics, moderated F-statistics, and log-odds of differential expression by empirical Bayes moderation of the standard errors towards a common value.
+
+```{r}
+fit2  <- contrasts.fit(fit, cont.matrix)
+fit2  <- eBayes(fit2)
+fit2
+class(fit2)
+names(fit2)
+```
+
+Since our model has fit three contrasts variables, the matrix of coefficients contains 3 columns.
+
+```{r}
+dim(fit2$coefficients)
+colnames(fit2$coefficients)
+```
+
+Coef = 1 corresponds to the first contrast variable E10, coef = 2 refers to the second contrast variable E48 and coef = 3 refers to the contrast variable Time. In order to extract a table of the top-ranked genes from a linear model fit given a specific contrast variable we make use of the built in R function topTable.
+
+```{r}
+topTable(fit2,coef=1)
+```
+
+For the first contrast variable E10, the top ranked gene is "39642_at". This gene has the highest computed t-value in comparison with the others for this contrast variable. In other words the difference in the mean values of gene expression between the present10 and absent10 samples divided by its standard error, (which in moderated t-statistics has been moderated across genes effectively borrowing information from the ensemble of genes to aid with inference about each individual gene) has the highest value in this particular gene. By using barplot we can indeed observe the difference in the levels of gene expression between the samples "high10-1.cel" and "low10-1.cel" as well as "high10-2.cel" and "low10-2.cel".
+
+```{r}
+barplot( exprs(eset)["39642_at",], las=2, cex.names=.7 )  # top gene
+```
+
+As far as E48 is concerned, we observe below that the top gene is "910_at", which happens also to be the second ranked gene for E10. Out of this we can infer its ability to be differentially expressed in the conditions where estrogen is present regardless of time. This is depicted also in the following barplot where high levels of gene expression are presented in the samples "high10-1.cel", "high10-2.cel", "high48-1.cel", and "high48-2.cel". However, E48 refers only to the comparison between "high48-1.cel" and "low48-1.cel" as well as "high48-2.cel" and "low48-2.cel".
+
+```{r}
+topTable(fit2,coef=2)
+barplot( exprs(eset)["910_at",], las=2, cex.names=.7 )  # top gene
+```
+
+```{r}
+topTable(fit2,coef=3)
+```
+
+# Manual Calculation of logFC and AveExpr
+
+As we already know, the logFC measures the difference in the mean values of gene expression between samples of different conditions without taking into account gene variance. Therefore, given that in our model we have three contrast variables, logFC measures the difference in the mean values of the samples that belong to the conditions included in each contrast variable. In particular for E10, logFC refers to the difference in gene expression between "high10-1.cel" and "low10-1.cel" as well as "high10-2.cel" and "low10-2.cel". For E48 it refers to the difference in gene expression between "high48-1.cel" and "low48-1.cel" as well as "high48-2.cel" and "low48-2.cel". For Time, it refers to "low48-1.cel" and "low10-1.cel" as well as "low48-2.cel" and "low10-2.cel".
+
+In this experiment it can be observed that for each of the 4 different experimental conditions (absent10, present10, absent48, present48) 2 samples were measured. Since 4 samples are numbered with "1" and 4 with "2" we can therefore assume that all samples numbered with "1" belong to a sort of first experiment-trial and all samples numbered with "2" belong to a second one. Thus, in order to calculate the logFC, we can calculate first the differences of gene expression between the samples of each individual experiment and then calculate the mean of the resulting two values. For example, in order to calculate the logFC of the top gene for E10 first we would calculate the differences of gene expression: "high10-1.cel" - "low10-1.cel" as well as "high10-2.cel" - "low10-2.cel". Then we would take the mean of the two resulting values.  
+
+Below we calculate the logFC of the top gene for each of the three contrast variables by using the values of our expression set.
+
+```{r}
+topgene_coef1 = row.names(topTable(fit2,coef=1)[1, ]);
+topgene_coef2 = row.names(topTable(fit2,coef=2)[1, ]);
+topgene_coef3 = row.names(topTable(fit2,coef=3)[1, ]);
+
+rowtopgene_coef1 = exprs(eset)[topgene_coef1, ];
+rowtopgene_coef2 = exprs(eset)[topgene_coef2, ];
+rowtopgene_coef3 = exprs(eset)[topgene_coef3, ];
+
+comp_1 = c(rowtopgene_coef1[4]-rowtopgene_coef1[2],rowtopgene_coef1[3]-rowtopgene_coef1[1]);
+LogFC_1 = mean(comp_1); # E10
+LogFC_1
+comp_2 = c(rowtopgene_coef2[8]-rowtopgene_coef2[6],rowtopgene_coef2[7]-rowtopgene_coef2[5]);
+LogFC_2 = mean(comp_2); # E48
+LogFC_2
+comp_3 = c(rowtopgene_coef3[6]-rowtopgene_coef3[2],rowtopgene_coef3[5]-rowtopgene_coef3[1]);
+LogFC_3 = mean(comp_3); # Time
+LogFC_3
+```
+
+Another way that we can use to manually calculate the logFC is to find the mean value of gene expression of the samples that belong to the same condition and then subtract the resulting two mean values between them according to the formula of each contrast variable. This way does not distinguish the samples in different experiments but assumes that the two samples "1", "2" for each condition belong to the same experimental trial. For example, in order to calculate the logFC of the top gene for E10 first we would calculate the mean value of gene expression for each condition: mean value of "high10-1.cel", "high10-2.cel" as well as mean value of "low10-1.cel", "low10-2.cel". Then we would take the difference of the two resulting mean values.
+
+We calculate the logFC of the top gene for each of the three contrast variables and we observe the same results as expected.
+
+```{r}
+mean_1 = mean(c(rowtopgene_coef1[3],rowtopgene_coef1[4]))   # E10
+mean_2 = mean(c(rowtopgene_coef1[1],rowtopgene_coef1[2]))
+LogFC_1 = mean_1 - mean_2
+LogFC_1
+mean_1 = mean(c(rowtopgene_coef2[7],rowtopgene_coef2[8]))   # E48
+mean_2 = mean(c(rowtopgene_coef2[5],rowtopgene_coef2[6]))
+LogFC_2 = mean_1 - mean_2
+LogFC_2
+mean_1 = mean(c(rowtopgene_coef3[5],rowtopgene_coef3[6]))   # Time
+mean_2 = mean(c(rowtopgene_coef3[1],rowtopgene_coef3[2]))
+LogFC_3 = mean_1 - mean_2
+LogFC_3
+```
+
+In order to calculate manually the average expression of the top gene for each contrast variable we calculate the mean value of all gene expressions across the 8 samples for this specific gene. Instead of using the built in R function mean(), we could sum all indivudual gene expressions and divide this sum by the number of samples.  
+
+```{r}
+AvExpr_coef1 = mean(rowtopgene_coef1);
+AvExpr_coef1
+AvExpr_coef2 = mean(rowtopgene_coef2);
+AvExpr_coef2
+AvExpr_coef3 = mean(rowtopgene_coef3);
+AvExpr_coef3
+```
+
+We observe that the manually calculated values of logFC and AvExpr out of our expression set are the same with the ones that our model provides.  
+
+# Venn Diagram
+
+In order to visualize the numbers of  differential genes for 'E10', 'E48' and 'Time' we construct the Venn Diagram. Initially we use the function decideTests which takes as input our model and implements multiple testing procedures for determining whether each statistic in the matrix of t-statistics should be considered significantly different from zero. Then this output is given as input to the function vennDiagram which computes the classification counts and draws the Venn diagram.
+  
+```{r}
+res = decideTests(fit2)
+vennDiagram(res) 
+```
+
+Out of the Venn Diagram we summarize the number of genes that are differentiated relatively to each contrast. In particular, we observe that only 66 genes are differentially expressed only in E10, meaning that these genes are differentially expressed in the presence of estrogen for time scale of 10 hours without being differentially expressed in the ansence of estrogen in the same time scale. Moreover, we can see that 207 genes are differentially expressed only when the estrogen is present regardless of the time scale, while 451 genes are differentially expressed only when estrogen is absent in the time scale of 48h but are not differentially expressed in the absence of estrogen for the time scale of 10h. What is worth mentioning is that there are 32 genes which are differentially expressed in E10, E48 and Time, meaning that they are differentially expressed in the presence of estrogen for both time scales as well as in the absence of estrogen for the time scale of 48h. Also we need to mention that the majority of genes (11449) are not classified to one of the three contrasts shown, meaning that they are differentially expressed in conditions which are not captured by the contrast variables that we have defined. 
+ 
+# Alternative Design Matrix 
+
+We will try to reproduce the above limma modeling using an alternative design matrix. For this purpose we use the experimental factors defined in the 'targets' data frame and construct a design matrix with an intercept column. The intercept column is the absent10 condition which in this alternative way of modeling is the reference condition. 
+
+However, as already stated, the form of the design matrix is in accordance with the parameters that need to be estimated. Therefore, by using this alternative design matrix we redefine the parameters of our model which are interpreted differently. Specifically, we define the parameter vector b=transpose([b1 b2 b3 b4]), where b1 denotes the reference condition  "absent10", b2 denotes the condition "absent48" - "absent10", b3 denotes the condition "present10"-"absent10" and b4 denotes the condition  "present48"-"absent10". 
+
+As a result we observe that our parameters are essentially comparisons between our initial conditions. Moreover we can see that the parameters b2 ("absent48" - "absent10") and b3 ("present10"-"absent10") form correspondingly the comparisons Time and E10.  
+
+In this step we decide not to form a contrast matrix since our current parameters denote contrasts between conditions. By skipping the part of the contrast matrix we fit our model using the limma procedure. Now, since the number of our parameters is four, the  numeric matrix containing the estimated coefficients will have four columns. Coef = 1 refers to the reference parameter, coef = 2 refers to the parameter b2 ("absent48" - "absent10"), coef = 3 refers to the parameter b3 ("present10"-"absent10") and coef = 4 refers to the parameter b4 ("present48"-"absent10"). Since parameters b2 and b3 form the comparisons modeled by the contrast variables Time and E10 of our previous model correspondingly we expect to have the same computed statistics and the same top genes. We see that this is the case.
+
+```{r}
+design_mine <- model.matrix(~f)
+colnames(design_mine) <- levels(f)
+design_mine
+fit_mine <- lmFit(eset, design_mine)
+fit2_mine <- eBayes(fit_mine)
+
+topTable(fit2_mine,coef=2)
+topTable(fit2_mine,coef=3)
+```
+
+In this model the parameter b4 forms a comparison ("present48"-"absent10") which we did not have in the previous model. Respectively, the contrast variable E48 of our previous model is not formed in the alternative modeling that we have used. Therefore, we see that our new model reproduces our initial one in 2 coefficients and not in 3.
+
+In the Venn Diagram shown below we vizualize the number of differential genes for the parameters b2 ("absent48" - "absent10") and b3 ("present10"-"absent10"). Taking into account the correspondence of these two parameters with Time and E10 respectively we construct the following Venn Diagram.
+
+```{r}
+res_mine = decideTests(fit2_mine)
+group_coef = cbind(res_mine[ ,"present10"],res_mine[,"absent48"])
+colnames(group_coef) = c("E10","Time");
+vennDiagram(group_coef)
+```
+
+Now, we plot the Venn Digram of our initial model only for Time and E10 and we receive the same Diagram as expected.
+
+```{r}
+group_coef_initial = cbind(res[ ,"E10"],res[,"Time"])
+colnames(group_coef_initial) = c("E10","Time");
+vennDiagram(group_coef_initial)
+```
+
+As already stated, this new model reproduces our initial one in 2 coefficients (E10, Time) and not in 3. In order to fully reproduce our initial model, we need to model also the contrast E48. Since this contrast cannot be modeled directly from our design matrix (design_mine) we will add a contrast matrix. This contrast matrix takes into account that our parameters already form comparisons, therefore it will include the parameters b2, b3 and the contrast b4-b2 ("present48" - "absent10" - ("absent48" - "absent10") = "present48" - "absent48") which results in E48.
+
+By keeping the design matrix as it is, the contrast matrix is constructed as follows. Then we "enter" our contrast matrix in the model.
+
+```{r}
+cont.matrix_mine <- makeContrasts(E10="present10",E48="present48-absent48",
+                                  TIME ="absent48",levels=design_mine)
+
+cont.matrix_mine
+
+fit2_betw  <- contrasts.fit(fit_mine, cont.matrix_mine)
+fit2_mine2<- eBayes(fit2_betw)
+
+topTable(fit2_mine2,coef=1)
+topTable(fit2_mine2,coef=2)
+topTable(fit2_mine2,coef=3)
+```
+
+Now the number of columns in the coefficients matrix is 3. Coef = 1 refers to b3 (E10, "present10" - "absent10"), coef = 2 refers to the comparison b4-b2  (E48, "present48"-"absent48")  and coef = 3 refers to the parameter b2 (Time, "absent48"-"absent10").
+
+Since our newest model reproduces all three contrasts of our initial model, we receive the same statistics with our initial model for all three contrasts. As expected the top genes of our model for each contrast are reproduced.
+
+Additionally we plot the Venn Diagram and we observe the same classification of genes as in our initial model.
+
+```{r}
+res_mine2 = decideTests(fit2_mine2)
+vennDiagram(res_mine2)
+```
+
+To conclude, our newest alternative model reproduces fully the initial one.
